@@ -14,7 +14,7 @@
 ## 安装
 
 ```bash
-cd /home/runner/work/try/try
+cd /path/to/project
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -39,7 +39,7 @@ date,target,gdp,temperature,population,price,holiday,new_energy_capacity
 ## 运行
 
 ```bash
-cd /home/runner/work/try/try
+cd /path/to/project
 python src/power_forecasting_pipeline.py \
   --data /absolute/path/to/electricity.csv \
   --date-col date \
@@ -47,6 +47,8 @@ python src/power_forecasting_pipeline.py \
   --horizon 6 \
   --top-k 5 \
   --robust-radius 1.0 \
+  --scenario-delta 0.02 \
+  --robust-candidates 0.01,0.1,1,3,10 \
   --output /absolute/path/to/output
 ```
 

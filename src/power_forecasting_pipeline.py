@@ -21,6 +21,8 @@ class PipelineConfig:
     top_k: int = 5
     robust_radius: float = 1.0
     test_splits: int = 5
+    robust_radius_candidates: Tuple[float, ...] = (0.01, 0.1, 1.0, 3.0, 10.0)
+    scenario_delta: float = 0.02
 
 
 def load_data(path: str, date_col: str) -> pd.DataFrame:
@@ -105,7 +107,7 @@ def rolling_backtest(
         lr.fit(X_train_s, y_train)
         baseline_lr_scores.append(metrics(y_test.to_numpy(), lr.predict(X_test_s)))
 
-        # DRO近似：稳健半径 -> 更强正则的Ridge
+        # DRO approximation: robust radius -> stronger Ridge regularization
         alpha = max(1e-6, robust_radius)
         dro = Ridge(alpha=alpha)
         dro.fit(X_train_s, y_train)
@@ -133,10 +135,12 @@ def fit_models_and_forecast(
     dro = Ridge(alpha=max(1e-6, cfg.robust_radius)).fit(X_s, y)
 
     residual = y.to_numpy() - dro.predict(X_s)
-    q_low, q_high = np.quantile(residual, [0.1, 0.9])
+    residual_centered = residual - residual.mean()
+    q_low, q_high = np.quantile(residual_centered, [0.1, 0.9])
 
     last_x = X.iloc[[-1]].copy()
-    scenario_multipliers = {"low": 0.98, "base": 1.00, "high": 1.02}
+    d = float(abs(cfg.scenario_delta))
+    scenario_multipliers = {"low": 1.0 - d, "base": 1.00, "high": 1.0 + d}
     rows = []
     for step in range(1, cfg.horizon + 1):
         base_input = last_x.copy()
@@ -194,7 +198,12 @@ def run_pipeline(data_path: str, output_dir: str, cfg: PipelineConfig) -> None:
     selected = gra_scores.head(min(cfg.top_k, len(gra_scores))).index.tolist()
 
     X, y = make_supervised(df, cfg.target_col, selected)
-    cfg.robust_radius = choose_robust_radius(X, y, candidates=[0.01, 0.1, 1.0, 3.0, 10.0], splits=max(2, cfg.test_splits - 1))
+    cfg.robust_radius = choose_robust_radius(
+        X,
+        y,
+        candidates=list(cfg.robust_radius_candidates),
+        splits=max(2, cfg.test_splits - 1),
+    )
     eval_result = rolling_backtest(X, y, robust_radius=cfg.robust_radius, splits=cfg.test_splits)
     future = fit_models_and_forecast(df, cfg, selected)
 
@@ -228,11 +237,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--robust-radius", type=float, default=1.0)
     parser.add_argument("--test-splits", type=int, default=5)
+    parser.add_argument("--scenario-delta", type=float, default=0.02, help="Scenario perturbation ratio, e.g. 0.02 for ±2%")
+    parser.add_argument(
+        "--robust-candidates",
+        default="0.01,0.1,1.0,3.0,10.0",
+        help="Comma-separated robust radius candidates for CV selection",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    robust_candidates = tuple(float(v.strip()) for v in str(args.robust_candidates).split(",") if v.strip())
+    if not robust_candidates:
+        raise ValueError("At least one robust radius candidate is required.")
     cfg = PipelineConfig(
         date_col=args.date_col,
         target_col=args.target_col,
@@ -240,6 +258,8 @@ def main() -> None:
         top_k=args.top_k,
         robust_radius=args.robust_radius,
         test_splits=args.test_splits,
+        robust_radius_candidates=robust_candidates,
+        scenario_delta=args.scenario_delta,
     )
     run_pipeline(args.data, args.output, cfg)
 
