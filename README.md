@@ -48,6 +48,9 @@ python src/power_forecasting_pipeline.py \
   --top-k 5 \
   --robust-radius 1.0 \
   --scenario-delta 0.02 \
+  --gra-rho 0.5 \
+  --iqr-multiplier 1.5 \
+  --interval-alpha 0.2 \
   --robust-candidates 0.01,0.1,1,3,10 \
   --output /absolute/path/to/output
 ```

@@ -23,6 +23,9 @@ class PipelineConfig:
     test_splits: int = 5
     robust_radius_candidates: Tuple[float, ...] = (0.01, 0.1, 1.0, 3.0, 10.0)
     scenario_delta: float = 0.02
+    gra_rho: float = 0.5
+    iqr_multiplier: float = 1.5
+    interval_alpha: float = 0.2
 
 
 def load_data(path: str, date_col: str) -> pd.DataFrame:
@@ -33,7 +36,7 @@ def load_data(path: str, date_col: str) -> pd.DataFrame:
     return df.sort_values(date_col).reset_index(drop=True)
 
 
-def preprocess(df: pd.DataFrame, date_col: str, target_col: str) -> pd.DataFrame:
+def preprocess(df: pd.DataFrame, date_col: str, target_col: str, iqr_multiplier: float) -> pd.DataFrame:
     out = df.copy()
     numeric_cols = [c for c in out.columns if c != date_col]
     out[numeric_cols] = out[numeric_cols].apply(pd.to_numeric, errors="coerce")
@@ -42,8 +45,8 @@ def preprocess(df: pd.DataFrame, date_col: str, target_col: str) -> pd.DataFrame
     for col in [c for c in numeric_cols if c != target_col]:
         q1, q3 = out[col].quantile([0.25, 0.75])
         iqr = q3 - q1
-        low = q1 - 1.5 * iqr
-        high = q3 + 1.5 * iqr
+        low = q1 - iqr_multiplier * iqr
+        high = q3 + iqr_multiplier * iqr
         out[col] = out[col].clip(lower=low, upper=high)
     return out
 
@@ -136,7 +139,9 @@ def fit_models_and_forecast(
 
     residual = y.to_numpy() - dro.predict(X_s)
     residual_centered = residual - residual.mean()
-    q_low, q_high = np.quantile(residual_centered, [0.1, 0.9])
+    alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
+    q_low, q_high = np.quantile(residual_centered, [alpha / 2.0, 1.0 - alpha / 2.0])
+    interval_coverage = int(round((1.0 - alpha) * 100))
 
     last_x = X.iloc[[-1]].copy()
     d = float(abs(cfg.scenario_delta))
@@ -157,8 +162,8 @@ def fit_models_and_forecast(
             {
                 "horizon_step": step,
                 "point_forecast": base_pred,
-                "interval_lower_80": base_pred + float(q_low),
-                "interval_upper_80": base_pred + float(q_high),
+                f"interval_lower_{interval_coverage}": base_pred + float(q_low),
+                f"interval_upper_{interval_coverage}": base_pred + float(q_high),
                 "scenario_low": sc["low"],
                 "scenario_base": sc["base"],
                 "scenario_high": sc["high"],
@@ -188,13 +193,13 @@ def choose_robust_radius(X: pd.DataFrame, y: pd.Series, candidates: List[float],
 
 def run_pipeline(data_path: str, output_dir: str, cfg: PipelineConfig) -> None:
     df = load_data(data_path, cfg.date_col)
-    df = preprocess(df, cfg.date_col, cfg.target_col)
+    df = preprocess(df, cfg.date_col, cfg.target_col, iqr_multiplier=cfg.iqr_multiplier)
 
     feature_cols = [c for c in df.columns if c not in [cfg.date_col, cfg.target_col]]
     if not feature_cols:
         raise ValueError("At least one feature column is required.")
 
-    gra_scores = grey_relation_scores(df, cfg.target_col, feature_cols)
+    gra_scores = grey_relation_scores(df, cfg.target_col, feature_cols, rho=cfg.gra_rho)
     selected = gra_scores.head(min(cfg.top_k, len(gra_scores))).index.tolist()
 
     X, y = make_supervised(df, cfg.target_col, selected)
@@ -219,6 +224,9 @@ def run_pipeline(data_path: str, output_dir: str, cfg: PipelineConfig) -> None:
             "horizon": cfg.horizon,
             "top_k": cfg.top_k,
             "robust_radius_selected": cfg.robust_radius,
+            "gra_rho": cfg.gra_rho,
+            "iqr_multiplier": cfg.iqr_multiplier,
+            "interval_alpha": cfg.interval_alpha,
             "metrics": ["mae", "rmse", "mape"],
         },
         "selected_features": selected,
@@ -238,6 +246,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--robust-radius", type=float, default=1.0)
     parser.add_argument("--test-splits", type=int, default=5)
     parser.add_argument("--scenario-delta", type=float, default=0.02, help="Scenario perturbation ratio, e.g. 0.02 for ±2%")
+    parser.add_argument("--gra-rho", type=float, default=0.5, help="Grey relation distinguishing coefficient")
+    parser.add_argument("--iqr-multiplier", type=float, default=1.5, help="IQR multiplier for outlier clipping")
+    parser.add_argument("--interval-alpha", type=float, default=0.2, help="Prediction interval tail mass, 0.2 => 80% interval")
     parser.add_argument(
         "--robust-candidates",
         default="0.01,0.1,1.0,3.0,10.0",
@@ -260,6 +271,9 @@ def main() -> None:
         test_splits=args.test_splits,
         robust_radius_candidates=robust_candidates,
         scenario_delta=args.scenario_delta,
+        gra_rho=args.gra_rho,
+        iqr_multiplier=args.iqr_multiplier,
+        interval_alpha=args.interval_alpha,
     )
     run_pipeline(args.data, args.output, cfg)
 
