@@ -139,24 +139,27 @@ def fit_models_and_forecast(
 
     residual = y.to_numpy() - dro.predict(X_s)
     residual_centered = residual - residual.mean()
-    alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
-    q_low, q_high = np.quantile(residual_centered, [alpha / 2.0, 1.0 - alpha / 2.0])
-    interval_coverage = int(round((1.0 - alpha) * 100))
+    interval_tail_alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
+    q_low, q_high = np.quantile(
+        residual_centered,
+        [interval_tail_alpha / 2.0, 1.0 - interval_tail_alpha / 2.0],
+    )
+    interval_coverage = int(round((1.0 - interval_tail_alpha) * 100))
 
     last_x = X.iloc[[-1]].copy()
-    d = float(abs(cfg.scenario_delta))
-    scenario_multipliers = {"low": 1.0 - d, "base": 1.00, "high": 1.0 + d}
+    perturbation_ratio = float(abs(cfg.scenario_delta))
+    scenario_multipliers = {"low": 1.0 - perturbation_ratio, "base": 1.00, "high": 1.0 + perturbation_ratio}
     rows = []
     for step in range(1, cfg.horizon + 1):
         base_input = last_x.copy()
         base_input_s, _ = scale_with_train(X, base_input)
         base_pred = float(dro.predict(base_input_s)[0])
 
-        sc = {}
+        scenario_forecasts = {}
         for name, mul in scenario_multipliers.items():
             inp = base_input * mul
             inp_s, _ = scale_with_train(X, inp)
-            sc[name] = float(dro.predict(inp_s)[0])
+            scenario_forecasts[name] = float(dro.predict(inp_s)[0])
 
         rows.append(
             {
@@ -164,9 +167,9 @@ def fit_models_and_forecast(
                 "point_forecast": base_pred,
                 f"interval_lower_{interval_coverage}": base_pred + float(q_low),
                 f"interval_upper_{interval_coverage}": base_pred + float(q_high),
-                "scenario_low": sc["low"],
-                "scenario_base": sc["base"],
-                "scenario_high": sc["high"],
+                "scenario_low": scenario_forecasts["low"],
+                "scenario_base": scenario_forecasts["base"],
+                "scenario_high": scenario_forecasts["high"],
                 "baseline_linear_reference": float(lr.predict(base_input_s)[0]),
             }
         )
