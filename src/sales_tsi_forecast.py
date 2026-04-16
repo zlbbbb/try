@@ -32,7 +32,10 @@ def parse_mixed_date(value: object) -> pd.Timestamp:
     m = re.fullmatch(r"(\d{4})/(\d{1,2})月", text)
     if m:
         return pd.Timestamp(year=int(m.group(1)), month=int(m.group(2)), day=1)
-    return pd.to_datetime(text)
+    try:
+        return pd.to_datetime(text)
+    except Exception as exc:
+        raise ValueError(f"Unsupported date format: {value!r}") from exc
 
 
 def _clean_target_series(series: pd.Series, col_name: str) -> pd.Series:
