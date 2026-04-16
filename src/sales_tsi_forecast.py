@@ -223,7 +223,7 @@ def build_category_result_table(compare: pd.DataFrame, future: pd.DataFrame) -> 
 
 
 def sanitize_filename(name: str) -> str:
-    return re.sub(r"[\\\\/:*?\"<>|\\s]+", "_", str(name)).strip("_") or "result"
+    return re.sub(r"[\\/:*?\"<>|\s]+", "_", str(name)).strip("_") or "result"
 
 
 def build_summary_table(
