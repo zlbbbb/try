@@ -87,6 +87,21 @@ def metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
     }
 
 
+def build_standardized_linear_equation(
+    target_col: str,
+    feature_cols: List[str],
+    intercept: float,
+    coef: np.ndarray,
+    mean: pd.Series,
+    std: pd.Series,
+) -> str:
+    terms = [
+        f"{float(c):.6f}*(({{{f}}}-{float(mean[f]):.6f})/{float(std[f]):.6f})"
+        for f, c in zip(feature_cols, coef)
+    ]
+    return f"{target_col} = {float(intercept):.6f} + " + " + ".join(terms)
+
+
 def rolling_backtest(
     X: pd.DataFrame,
     y: pd.Series,
@@ -130,9 +145,11 @@ def fit_models_and_forecast(
     df: pd.DataFrame,
     cfg: PipelineConfig,
     selected_features: List[str],
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict[str, str]]:
     X, y = make_supervised(df, cfg.target_col, selected_features)
-    X_s, _ = scale_with_train(X, X)
+    mean = X.mean(axis=0)
+    std = X.std(axis=0).replace(0, 1.0)
+    X_s = (X - mean) / std
 
     lr = LinearRegression().fit(X_s, y)
     dro = Ridge(alpha=max(1e-6, cfg.robust_radius)).fit(X_s, y)
@@ -152,13 +169,13 @@ def fit_models_and_forecast(
     rows = []
     for step in range(1, cfg.horizon + 1):
         base_input = last_x.copy()
-        base_input_s, _ = scale_with_train(X, base_input)
+        base_input_s = (base_input - mean) / std
         base_pred = float(dro.predict(base_input_s)[0])
 
         scenario_forecasts = {}
         for name, mul in scenario_multipliers.items():
             inp = base_input * mul
-            inp_s, _ = scale_with_train(X, inp)
+            inp_s = (inp - mean) / std
             scenario_forecasts[name] = float(dro.predict(inp_s)[0])
 
         rows.append(
@@ -173,7 +190,15 @@ def fit_models_and_forecast(
                 "baseline_linear_reference": float(lr.predict(base_input_s)[0]),
             }
         )
-    return pd.DataFrame(rows)
+    equations = {
+        "baseline_linear_regression": build_standardized_linear_equation(
+            cfg.target_col, selected_features, lr.intercept_, lr.coef_, mean, std
+        ),
+        "dro_ridge": build_standardized_linear_equation(
+            cfg.target_col, selected_features, dro.intercept_, dro.coef_, mean, std
+        ),
+    }
+    return pd.DataFrame(rows), equations
 
 
 def choose_robust_radius(X: pd.DataFrame, y: pd.Series, candidates: List[float], splits: int = 4) -> float:
@@ -213,7 +238,7 @@ def run_pipeline(data_path: str, output_dir: str, cfg: PipelineConfig) -> None:
         splits=max(2, cfg.test_splits - 1),
     )
     eval_result = rolling_backtest(X, y, robust_radius=cfg.robust_radius, splits=cfg.test_splits)
-    future = fit_models_and_forecast(df, cfg, selected)
+    future, equations = fit_models_and_forecast(df, cfg, selected)
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -234,6 +259,7 @@ def run_pipeline(data_path: str, output_dir: str, cfg: PipelineConfig) -> None:
         },
         "selected_features": selected,
         "backtest_metrics": eval_result,
+        "model_equations": equations,
     }
     (out_dir / "metrics.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

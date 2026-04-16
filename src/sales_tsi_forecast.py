@@ -111,6 +111,8 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
 
     t = np.arange(n).reshape(-1, 1)
     trend_model = LinearRegression().fit(t, trend)
+    trend_intercept = float(trend_model.intercept_)
+    trend_slope = float(trend_model.coef_[0])
     t_future = np.arange(n, n + horizon).reshape(-1, 1)
     trend_future = trend_model.predict(t_future)
     seasonal_future = seasonal_index[(np.arange(n, n + horizon) % period)]
@@ -153,6 +155,11 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
         "mape": float(mean_absolute_percentage_error(compare["historical_sales"], compare["fitted_sales"])),
         "period": int(period),
         "irregular_coef_for_future": irregular_coef,
+        "model_equations": {
+            "decomposition": "Y_t = T_t × S_t × I_t",
+            "trend": f"T_t = {trend_intercept:.6f} + {trend_slope:.6f} * t",
+            "future_forecast": "Ŷ_(t+h) = T_(t+h) × S_((t+h) mod period) × Ī",
+        },
     }
     return compare, future, metric_payload
 

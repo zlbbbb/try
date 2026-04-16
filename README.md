@@ -58,6 +58,7 @@ python src/power_forecasting_pipeline.py \
 输出文件：
 
 - `metrics.json`：回测指标与模型对比
+- `metrics.json` 中包含 `model_equations` 字段，可查看线性回归与 DRO 模型预测方程
 - `grey_relation_scores.csv`：灰度关联度结果
 - `future_forecast.csv`：未来点预测/区间预测/情景预测
 
@@ -93,4 +94,4 @@ python src/sales_tsi_forecast.py \
 
 - `historical_vs_fitted.csv`：历史售电量与拟合值对比（含趋势/季节/不规则分量）
 - `future_sales_forecast.csv`：未来预测值（含趋势/季节/不规则分量）
-- `metrics.json`：历史拟合误差（MAE/RMSE/MAPE）
+- `metrics.json`：历史拟合误差（MAE/RMSE/MAPE）与模型预测方程（`model_equations`）
