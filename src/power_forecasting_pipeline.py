@@ -111,8 +111,8 @@ def rolling_backtest(
         baseline_lr_scores.append(metrics(y_test.to_numpy(), lr.predict(X_test_s)))
 
         # DRO approximation: robust radius -> stronger Ridge regularization
-        alpha = max(1e-6, robust_radius)
-        dro = Ridge(alpha=alpha)
+        ridge_alpha = max(1e-6, robust_radius)
+        dro = Ridge(alpha=ridge_alpha)
         dro.fit(X_train_s, y_train)
         dro_scores.append(metrics(y_test.to_numpy(), dro.predict(X_test_s)))
 
@@ -139,12 +139,12 @@ def fit_models_and_forecast(
 
     residual = y.to_numpy() - dro.predict(X_s)
     residual_centered = residual - residual.mean()
-    safe_alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
+    clamped_interval_alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
     q_low, q_high = np.quantile(
         residual_centered,
-        [safe_alpha / 2.0, 1.0 - safe_alpha / 2.0],
+        [clamped_interval_alpha / 2.0, 1.0 - clamped_interval_alpha / 2.0],
     )
-    interval_coverage = int(round((1.0 - safe_alpha) * 100))
+    interval_coverage = int(round((1.0 - clamped_interval_alpha) * 100))
 
     last_x = X.iloc[[-1]].copy()
     perturbation_ratio = float(abs(cfg.scenario_delta))

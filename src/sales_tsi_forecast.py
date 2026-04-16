@@ -61,8 +61,8 @@ def load_excel(path: str, sheet: Optional[str], date_col: Optional[str], target_
     if (df["target"] <= 0).any():
         positive_values = df["target"][df["target"] > 0]
         min_positive = float(positive_values.min()) if not positive_values.empty else DEFAULT_MIN_POSITIVE
-        floor = max(min_positive, 1e-6)
-        df["target"] = df["target"].clip(lower=floor)
+        clipping_floor = max(min_positive, 1e-6)
+        df["target"] = df["target"].clip(lower=clipping_floor)
     return df[["date", "target"]]
 
 
@@ -104,7 +104,8 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
 
     irregular = y / np.clip(trend * seasonal, EPSILON, None)
     irregular = pd.Series(irregular).replace([np.inf, -np.inf], np.nan).ffill().bfill().to_numpy()
-    irregular_coef = float(pd.Series(irregular).tail(min(period, len(irregular))).mean())
+    trailing_window_size = min(period, len(irregular))
+    irregular_coef = float(pd.Series(irregular).tail(trailing_window_size).mean())
 
     fitted = trend * seasonal * irregular
 
