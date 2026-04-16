@@ -16,6 +16,13 @@ EPSILON = 1e-12
 DEFAULT_MIN_POSITIVE = 1.0
 DEFAULT_STEP_DAYS = 30
 CATEGORY_COLUMNS = ["大工业", "居民生活", "农业生产", "工商业", "趸售及其他"]
+FACTOR_SHEET_BY_CATEGORY = {
+    "大工业": "大工业",
+    "居民生活": "居民",
+    "农业生产": "农业",
+    "工商业": "一般工商业及其他",
+    "趸售及其他": "趸售",
+}
 
 
 def parse_mixed_date(value: object) -> pd.Timestamp:
@@ -97,6 +104,72 @@ def split_history_and_future_dates(df: pd.DataFrame, value_col: str) -> tuple[pd
     return history.reset_index(drop=True), future_dates
 
 
+def _parse_factor_sheet_dates(raw_dates: pd.Series) -> pd.Series:
+    parsed = raw_dates.map(lambda v: parse_mixed_date(v) if pd.notna(v) else pd.NaT)
+    non_null = parsed.dropna()
+    if non_null.empty:
+        return parsed
+    first = non_null.iloc[0]
+    synthetic = pd.date_range(start=first, periods=len(parsed), freq="MS")
+    out = parsed.copy()
+    out[out.isna()] = synthetic[out.isna()]
+    return out
+
+
+def load_external_factor_profiles(path: Path) -> dict[str, pd.DataFrame]:
+    if not path.exists():
+        return {}
+    profiles: dict[str, pd.DataFrame] = {}
+    xls = pd.ExcelFile(path)
+    for category, sheet in FACTOR_SHEET_BY_CATEGORY.items():
+        if sheet not in xls.sheet_names:
+            continue
+        raw = pd.read_excel(path, sheet_name=sheet)
+        if "月份" not in raw.columns:
+            continue
+        df = pd.DataFrame({"date": _parse_factor_sheet_dates(raw["月份"])})
+        df["trend_component"] = pd.to_numeric(raw.get("长期循环趋势"), errors="coerce")
+        df["seasonal_component"] = pd.to_numeric(raw.get("季节调整系数"), errors="coerce")
+        df["irregular_component"] = pd.to_numeric(raw.get("不规则系数"), errors="coerce")
+        df = df[df["date"].notna()]
+        valid = df[["trend_component", "seasonal_component", "irregular_component"]].notna().any(axis=1)
+        df = df[valid].sort_values("date").drop_duplicates(subset=["date"], keep="last")
+        if not df.empty:
+            profiles[category] = df.reset_index(drop=True)
+    return profiles
+
+
+def apply_factor_overrides(
+    dates: pd.Series,
+    trend_component: np.ndarray,
+    seasonal_component: np.ndarray,
+    irregular_component: np.ndarray,
+    factor_profile: Optional[pd.DataFrame],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if factor_profile is None or factor_profile.empty:
+        return trend_component, seasonal_component, irregular_component
+    keyed = factor_profile.set_index("date")
+    trend_out = trend_component.copy()
+    seasonal_out = seasonal_component.copy()
+    irregular_out = irregular_component.copy()
+    for i, dt in enumerate(pd.to_datetime(dates)):
+        if dt not in keyed.index:
+            continue
+        row = keyed.loc[dt]
+        if isinstance(row, pd.DataFrame):
+            row = row.iloc[-1]
+        ext_trend = row.get("trend_component")
+        ext_seasonal = row.get("seasonal_component")
+        ext_irregular = row.get("irregular_component")
+        if pd.notna(ext_trend):
+            trend_out[i] = float(ext_trend)
+        if pd.notna(ext_seasonal):
+            seasonal_out[i] = float(ext_seasonal)
+        if pd.notna(ext_irregular):
+            irregular_out[i] = float(ext_irregular)
+    return trend_out, seasonal_out, irregular_out
+
+
 def infer_period(dates: pd.Series, explicit_period: Optional[int]) -> int:
     if explicit_period is not None and explicit_period > 1:
         return explicit_period
@@ -108,7 +181,11 @@ def infer_period(dates: pd.Series, explicit_period: Optional[int]) -> int:
 
 
 def tsi_decompose_and_forecast(
-    df: pd.DataFrame, period: int, horizon: int, future_dates: Optional[list[pd.Timestamp]] = None
+    df: pd.DataFrame,
+    period: int,
+    horizon: int,
+    future_dates: Optional[list[pd.Timestamp]] = None,
+    factor_profile: Optional[pd.DataFrame] = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     y = df["target"].to_numpy(dtype=float)
     n = len(y)
@@ -140,6 +217,9 @@ def tsi_decompose_and_forecast(
     trailing_window_size = min(period, len(irregular))
     irregular_coef = float(pd.Series(irregular).tail(trailing_window_size).mean())
 
+    trend, seasonal, irregular = apply_factor_overrides(
+        df["date"], trend, seasonal, irregular, factor_profile=factor_profile
+    )
     fitted = trend * seasonal * irregular
 
     t = np.arange(n).reshape(-1, 1)
@@ -152,7 +232,6 @@ def tsi_decompose_and_forecast(
     trend_future = trend_model.predict(t_future)
     seasonal_future = seasonal_index[(np.arange(n, n + horizon) % period)]
     irregular_future = np.repeat(irregular_coef, horizon)
-    forecast = trend_future * seasonal_future * irregular_future
 
     if future_dates is None:
         freq = pd.infer_freq(df["date"])
@@ -164,6 +243,15 @@ def tsi_decompose_and_forecast(
             step_days = max(step_days, 1)
             offset = pd.offsets.Day(step_days)
         future_dates = [df["date"].iloc[-1] + (i + 1) * offset for i in range(horizon)]
+    future_dates_series = pd.Series(future_dates, dtype="datetime64[ns]")
+    trend_future, seasonal_future, irregular_future = apply_factor_overrides(
+        future_dates_series,
+        trend_future,
+        seasonal_future,
+        irregular_future,
+        factor_profile=factor_profile,
+    )
+    forecast = trend_future * seasonal_future * irregular_future
 
     compare = pd.DataFrame(
         {
@@ -284,12 +372,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-col", default=None, help="Target sales column; default auto-detect or sum")
     parser.add_argument("--horizon", type=int, default=12, help="Forecast horizon")
     parser.add_argument("--period", type=int, default=None, help="Seasonal period, e.g. 12 (month), 7 (day)")
+    parser.add_argument(
+        "--factor-data",
+        default=None,
+        help="Optional factor workbook (e.g. 0925VV.xlsx) used to override trend/seasonal/irregular components",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     df = load_excel(args.data, args.sheet, args.date_col, args.target_col)
+    default_factor = Path(args.data).resolve().parent / "0925VV.xlsx"
+    factor_path = Path(args.factor_data).resolve() if args.factor_data else default_factor
+    external_profiles = load_external_factor_profiles(factor_path)
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -307,6 +403,7 @@ def main() -> None:
                 period=period,
                 horizon=forecast_horizon,
                 future_dates=cat_future_dates if cat_future_dates else None,
+                factor_profile=external_profiles.get(cat),
             )
             category_compares[cat] = compare
             category_futures[cat] = future
@@ -322,6 +419,8 @@ def main() -> None:
             "categories": category_cols,
             "category_metrics": category_metrics,
         }
+        if external_profiles:
+            payload["factor_source"] = str(factor_path)
         (output / "metrics.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
         train_df, known_future_dates = split_history_and_future_dates(df, "target")
@@ -333,6 +432,8 @@ def main() -> None:
             horizon=forecast_horizon,
             future_dates=known_future_dates if known_future_dates else None,
         )
+        if external_profiles:
+            metric_payload["factor_source"] = str(factor_path)
         compare.to_csv(output / "historical_vs_fitted.csv", index=False)
         future.to_csv(output / "future_sales_forecast.csv", index=False)
         (output / "metrics.json").write_text(json.dumps(metric_payload, ensure_ascii=False, indent=2), encoding="utf-8")

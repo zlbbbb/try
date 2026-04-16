@@ -85,6 +85,7 @@ python src/sales_tsi_forecast.py \
   --sheet 2020-2024日度 \
   --date-col "日期" \
   --horizon 30 \
+  --factor-data /absolute/path/to/0925VV.xlsx \
   --output /absolute/path/to/output
 ```
 
@@ -106,3 +107,4 @@ python src/sales_tsi_forecast.py \
 
 - 若某列在尾部连续为空（如有效值到 2024/7，2024/8-2024/12 为空），脚本会将尾部空值日期识别为未来预测区间；
 - 模型仅使用最后一个真实值及之前的数据进行拟合（期间缺失仍会补齐），并输出“历史拟合对比 + 对尾部空日期的未来预测”。
+- 当提供 `--factor-data`（或数据同目录下存在 `0925VV.xlsx`）时，月度五分类会优先使用该文件中的“长期循环趋势/季节调整系数/不规则系数”作为预测要素；若某日期某分量缺失，则自动回退到模型估计值。
