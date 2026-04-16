@@ -88,7 +88,7 @@ python src/sales_tsi_forecast.py \
   --output /absolute/path/to/output
 ```
 
-说明: 若 Excel 第一列无列名, pandas 可能自动命名为 `"Unnamed: 0"`, 此时可显式传入该列名; 更推荐在数据源中明确日期列名(如 `"日期"`)。
+说明: 若 Excel 第一列无列名, pandas 可能自动命名为 `"Unnamed: 0"`, 此时可显式传入该列名; 更推荐在数据源中明确日期列名 (如 `"日期"`)。
 
 输出：
 
