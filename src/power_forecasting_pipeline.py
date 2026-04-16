@@ -267,7 +267,7 @@ def main() -> None:
     except ValueError as exc:
         raise ValueError(
             f"Invalid --robust-candidates value: '{args.robust_candidates}'. "
-            "Use comma-separated floats, e.g. 0.01,0.1,1,3,10"
+            "Use comma-separated floats, e.g. 0.01,0.1,1.0,3.0,10.0"
         ) from exc
     if not robust_candidates:
         raise ValueError("At least one robust radius candidate is required.")

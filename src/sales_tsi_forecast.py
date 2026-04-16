@@ -13,6 +13,8 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, mean_squared_error
 
 EPSILON = 1e-12
+DEFAULT_MIN_POSITIVE = 1.0
+DEFAULT_STEP_DAYS = 30
 
 
 def parse_mixed_date(value: object) -> pd.Timestamp:
@@ -58,7 +60,7 @@ def load_excel(path: str, sheet: Optional[str], date_col: Optional[str], target_
     df["target"] = df["target"].ffill().bfill()
     if (df["target"] <= 0).any():
         positive_values = df["target"][df["target"] > 0]
-        min_positive = float(positive_values.min()) if not positive_values.empty else 1.0
+        min_positive = float(positive_values.min()) if not positive_values.empty else DEFAULT_MIN_POSITIVE
         floor = max(min_positive, 1e-6)
         df["target"] = df["target"].clip(lower=floor)
     return df[["date", "target"]]
@@ -119,7 +121,7 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
         offset = pd.tseries.frequencies.to_offset(freq)
     else:
         day_delta = df["date"].diff().dt.days.dropna()
-        step_days = int(round(float(day_delta.median()))) if not day_delta.empty else 30
+        step_days = int(round(float(day_delta.median()))) if not day_delta.empty else DEFAULT_STEP_DAYS
         step_days = max(step_days, 1)
         offset = pd.offsets.Day(step_days)
     future_dates = [df["date"].iloc[-1] + (i + 1) * offset for i in range(horizon)]
