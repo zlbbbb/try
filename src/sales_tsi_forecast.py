@@ -61,28 +61,40 @@ def load_excel(path: str, sheet: Optional[str], date_col: Optional[str], target_
     df = df.sort_values("date").reset_index(drop=True)
 
     if target_col and target_col in df.columns:
-        df["target"] = _clean_target_series(df[target_col], target_col)
+        df["target"] = pd.to_numeric(df[target_col], errors="coerce")
         return df[["date", "target"]]
 
     category_cols_present = [c for c in CATEGORY_COLUMNS if c in df.columns]
     if len(category_cols_present) == len(CATEGORY_COLUMNS):
         out_cols = ["date"]
         for c in CATEGORY_COLUMNS:
-            df[c] = _clean_target_series(df[c], c)
+            df[c] = pd.to_numeric(df[c], errors="coerce")
             out_cols.append(c)
         return df[out_cols]
 
     total_like = [c for c in df.columns if "售电量" in str(c)]
     if total_like:
         chosen = total_like[0]
-        df["target"] = _clean_target_series(df[chosen], chosen)
+        df["target"] = pd.to_numeric(df[chosen], errors="coerce")
         return df[["date", "target"]]
 
     numeric_cols = [c for c in df.columns if c not in {date_col, "date"}]
     for c in numeric_cols:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["target"] = _clean_target_series(df[numeric_cols].sum(axis=1), "target_sum")
+    df["target"] = df[numeric_cols].sum(axis=1, min_count=1)
     return df[["date", "target"]]
+
+
+def split_history_and_future_dates(df: pd.DataFrame, value_col: str) -> tuple[pd.DataFrame, list[pd.Timestamp]]:
+    values = pd.to_numeric(df[value_col], errors="coerce")
+    last_valid_idx = values.last_valid_index()
+    if last_valid_idx is None:
+        raise ValueError(f"No valid values found in target series: {value_col}")
+
+    history = df.loc[:last_valid_idx, ["date"]].copy()
+    history["target"] = _clean_target_series(values.loc[:last_valid_idx], value_col)
+    future_dates = list(df.loc[last_valid_idx + 1 :, "date"].dropna())
+    return history.reset_index(drop=True), future_dates
 
 
 def infer_period(dates: pd.Series, explicit_period: Optional[int]) -> int:
@@ -95,7 +107,9 @@ def infer_period(dates: pd.Series, explicit_period: Optional[int]) -> int:
     return 7 if med <= 2 else 12
 
 
-def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+def tsi_decompose_and_forecast(
+    df: pd.DataFrame, period: int, horizon: int, future_dates: Optional[list[pd.Timestamp]] = None
+) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     y = df["target"].to_numpy(dtype=float)
     n = len(y)
 
@@ -132,21 +146,24 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
     trend_model = LinearRegression().fit(t, trend)
     trend_intercept_fitted = float(trend_model.intercept_)
     trend_slope_fitted = float(trend_model.coef_[0])
+    if future_dates is not None:
+        horizon = len(future_dates)
     t_future = np.arange(n, n + horizon).reshape(-1, 1)
     trend_future = trend_model.predict(t_future)
     seasonal_future = seasonal_index[(np.arange(n, n + horizon) % period)]
     irregular_future = np.repeat(irregular_coef, horizon)
     forecast = trend_future * seasonal_future * irregular_future
 
-    freq = pd.infer_freq(df["date"])
-    if freq:
-        offset = pd.tseries.frequencies.to_offset(freq)
-    else:
-        day_delta = df["date"].diff().dt.days.dropna()
-        step_days = int(round(float(day_delta.median()))) if not day_delta.empty else DEFAULT_STEP_DAYS
-        step_days = max(step_days, 1)
-        offset = pd.offsets.Day(step_days)
-    future_dates = [df["date"].iloc[-1] + (i + 1) * offset for i in range(horizon)]
+    if future_dates is None:
+        freq = pd.infer_freq(df["date"])
+        if freq:
+            offset = pd.tseries.frequencies.to_offset(freq)
+        else:
+            day_delta = df["date"].diff().dt.days.dropna()
+            step_days = int(round(float(day_delta.median()))) if not day_delta.empty else DEFAULT_STEP_DAYS
+            step_days = max(step_days, 1)
+            offset = pd.offsets.Day(step_days)
+        future_dates = [df["date"].iloc[-1] + (i + 1) * offset for i in range(horizon)]
 
     compare = pd.DataFrame(
         {
@@ -273,7 +290,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     df = load_excel(args.data, args.sheet, args.date_col, args.target_col)
-    period = infer_period(df["date"], args.period)
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -283,8 +299,15 @@ def main() -> None:
         category_compares: dict[str, pd.DataFrame] = {}
         category_futures: dict[str, pd.DataFrame] = {}
         for cat in category_cols:
-            cat_df = df[["date", cat]].rename(columns={cat: "target"})
-            compare, future, metric_payload = tsi_decompose_and_forecast(cat_df, period=period, horizon=args.horizon)
+            cat_train_df, cat_future_dates = split_history_and_future_dates(df[["date", cat]], cat)
+            period = infer_period(cat_train_df["date"], args.period)
+            forecast_horizon = len(cat_future_dates) if cat_future_dates else args.horizon
+            compare, future, metric_payload = tsi_decompose_and_forecast(
+                cat_train_df,
+                period=period,
+                horizon=forecast_horizon,
+                future_dates=cat_future_dates if cat_future_dates else None,
+            )
             category_compares[cat] = compare
             category_futures[cat] = future
             category_metrics[cat] = metric_payload
@@ -296,13 +319,20 @@ def main() -> None:
         summary = build_summary_table(category_compares, category_futures)
         summary.to_csv(output / "summary_result.csv", index=False)
         payload = {
-            "period": int(period),
             "categories": category_cols,
             "category_metrics": category_metrics,
         }
         (output / "metrics.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
-        compare, future, metric_payload = tsi_decompose_and_forecast(df, period=period, horizon=args.horizon)
+        train_df, known_future_dates = split_history_and_future_dates(df, "target")
+        period = infer_period(train_df["date"], args.period)
+        forecast_horizon = len(known_future_dates) if known_future_dates else args.horizon
+        compare, future, metric_payload = tsi_decompose_and_forecast(
+            train_df,
+            period=period,
+            horizon=forecast_horizon,
+            future_dates=known_future_dates if known_future_dates else None,
+        )
         compare.to_csv(output / "historical_vs_fitted.csv", index=False)
         future.to_csv(output / "future_sales_forecast.csv", index=False)
         (output / "metrics.json").write_text(json.dumps(metric_payload, ensure_ascii=False, indent=2), encoding="utf-8")

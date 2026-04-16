@@ -101,3 +101,8 @@ python src/sales_tsi_forecast.py \
   - `historical_vs_fitted.csv`：历史售电量与拟合值对比（含趋势/季节/不规则分量）
   - `future_sales_forecast.csv`：未来预测值（含趋势/季节/不规则分量）
   - `metrics.json`：历史拟合误差（MAE/RMSE/MAPE）与模型预测方程（`model_equations`）
+
+补充说明：
+
+- 若某列在尾部连续为空（如有效值到 2024/7，2024/8-2024/12 为空），脚本会将尾部空值日期识别为未来预测区间；
+- 模型仅使用最后一个真实值及之前的数据进行拟合（期间缺失仍会补齐），并输出“历史拟合对比 + 对尾部空日期的未来预测”。
