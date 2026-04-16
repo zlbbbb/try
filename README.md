@@ -72,3 +72,23 @@ python src/power_forecasting_pipeline.py \
 
 - 当前实现聚焦通用落地流程，便于在真实省级数据上直接迭代。
 - 如需接入 ARIMA/LSTM/XGBoost，可在同一回测框架中扩展。
+
+## Excel 售电量预测（长期趋势 + 季节系数 + 不规则系数）
+
+针对 Excel（如仓库中的 `2020-2024日度、月度表.xlsx`），可使用 TSI（Trend-Seasonal-Irregular）分解预测：
+
+```bash
+cd /path/to/project
+python src/sales_tsi_forecast.py \
+  --data /absolute/path/to/2020-2024日度、月度表.xlsx \
+  --sheet 2020-2024月度 \
+  --date-col Unnamed: 0 \
+  --horizon 12 \
+  --output /absolute/path/to/output
+```
+
+输出：
+
+- `historical_vs_fitted.csv`：历史售电量与拟合值对比（含趋势/季节/不规则分量）
+- `future_sales_forecast.csv`：未来预测值（含趋势/季节/不规则分量）
+- `metrics.json`：历史拟合误差（MAE/RMSE/MAPE）

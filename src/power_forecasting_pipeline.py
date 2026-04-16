@@ -139,12 +139,12 @@ def fit_models_and_forecast(
 
     residual = y.to_numpy() - dro.predict(X_s)
     residual_centered = residual - residual.mean()
-    interval_tail_alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
+    safe_alpha = float(min(max(cfg.interval_alpha, 1e-6), 0.99))
     q_low, q_high = np.quantile(
         residual_centered,
-        [interval_tail_alpha / 2.0, 1.0 - interval_tail_alpha / 2.0],
+        [safe_alpha / 2.0, 1.0 - safe_alpha / 2.0],
     )
-    interval_coverage = int(round((1.0 - interval_tail_alpha) * 100))
+    interval_coverage = int(round((1.0 - safe_alpha) * 100))
 
     last_x = X.iloc[[-1]].copy()
     perturbation_ratio = float(abs(cfg.scenario_delta))
@@ -262,7 +262,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    robust_candidates = tuple(float(v.strip()) for v in str(args.robust_candidates).split(",") if v.strip())
+    try:
+        robust_candidates = tuple(float(v.strip()) for v in str(args.robust_candidates).split(",") if v.strip())
+    except ValueError as exc:
+        raise ValueError("Invalid --robust-candidates format. Use comma-separated floats, e.g. 0.01,0.1,1,3,10") from exc
     if not robust_candidates:
         raise ValueError("At least one robust radius candidate is required.")
     cfg = PipelineConfig(
