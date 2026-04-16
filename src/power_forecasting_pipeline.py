@@ -265,7 +265,10 @@ def main() -> None:
     try:
         robust_candidates = tuple(float(v.strip()) for v in str(args.robust_candidates).split(",") if v.strip())
     except ValueError as exc:
-        raise ValueError("Invalid --robust-candidates format. Use comma-separated floats, e.g. 0.01,0.1,1,3,10") from exc
+        raise ValueError(
+            f"Invalid --robust-candidates value: '{args.robust_candidates}'. "
+            "Use comma-separated floats, e.g. 0.01,0.1,1,3,10"
+        ) from exc
     if not robust_candidates:
         raise ValueError("At least one robust radius candidate is required.")
     cfg = PipelineConfig(

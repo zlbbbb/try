@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +11,8 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error, mean_squared_error
+
+EPSILON = 1e-12
 
 
 def parse_mixed_date(value: object) -> pd.Timestamp:
@@ -50,6 +53,8 @@ def load_excel(path: str, sheet: Optional[str], date_col: Optional[str], target_
                 df[c] = pd.to_numeric(df[c], errors="coerce")
             df["target"] = df[numeric_cols].sum(axis=1)
 
+    if df["target"].isna().any():
+        warnings.warn("Missing values detected in target series; applying forward/backward fill.", RuntimeWarning)
     df["target"] = df["target"].ffill().bfill()
     if (df["target"] <= 0).any():
         positive_values = df["target"][df["target"] > 0]
@@ -81,17 +86,21 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
         .bfill()
         .to_numpy()
     )
-    detrended = y / np.clip(trend, 1e-12, None)
+    detrended = y / np.clip(trend, EPSILON, None)
     positions = np.arange(n) % period
 
     seasonal_index = np.ones(period, dtype=float)
     for p in range(period):
         vals = detrended[positions == p]
         seasonal_index[p] = float(np.nanmean(vals)) if len(vals) else 1.0
-    seasonal_index = seasonal_index / np.mean(seasonal_index)
+    seasonal_mean = float(np.nanmean(seasonal_index))
+    if abs(seasonal_mean) < EPSILON:
+        seasonal_index = np.ones(period, dtype=float)
+    else:
+        seasonal_index = seasonal_index / seasonal_mean
     seasonal = seasonal_index[positions]
 
-    irregular = y / np.clip(trend * seasonal, 1e-12, None)
+    irregular = y / np.clip(trend * seasonal, EPSILON, None)
     irregular = pd.Series(irregular).replace([np.inf, -np.inf], np.nan).ffill().bfill().to_numpy()
     irregular_coef = float(pd.Series(irregular).tail(min(period, len(irregular))).mean())
 
@@ -153,7 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--date-col", default=None, help="Date column name; default uses first column")
     parser.add_argument("--target-col", default=None, help="Target sales column; default auto-detect or sum")
     parser.add_argument("--horizon", type=int, default=12, help="Forecast horizon")
-    parser.add_argument("--period", type=int, default=None, help="Seasonal period, e.g. 12(month), 7(day)")
+    parser.add_argument("--period", type=int, default=None, help="Seasonal period, e.g. 12 (month), 7 (day)")
     return parser.parse_args()
 
 

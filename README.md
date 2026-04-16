@@ -82,10 +82,12 @@ cd /path/to/project
 python src/sales_tsi_forecast.py \
   --data /absolute/path/to/2020-2024日度、月度表.xlsx \
   --sheet 2020-2024月度 \
-  --date-col Unnamed: 0 \
+  --date-col "Unnamed: 0" \
   --horizon 12 \
   --output /absolute/path/to/output
 ```
+
+说明：`"Unnamed: 0"` 是部分 Excel 第一列无列名时被 pandas 自动命名的结果，建议在实际数据中显式命名日期列。
 
 输出：
 
