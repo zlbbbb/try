@@ -15,6 +15,7 @@ from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error,
 EPSILON = 1e-12
 DEFAULT_MIN_POSITIVE = 1.0
 DEFAULT_STEP_DAYS = 30
+CATEGORY_COLUMNS = ["大工业", "居民生活", "农业生产", "工商业", "趸售及其他"]
 
 
 def parse_mixed_date(value: object) -> pd.Timestamp:
@@ -25,6 +26,22 @@ def parse_mixed_date(value: object) -> pd.Timestamp:
     if m:
         return pd.Timestamp(year=int(m.group(1)), month=int(m.group(2)), day=1)
     return pd.to_datetime(text)
+
+
+def _clean_target_series(series: pd.Series, col_name: str) -> pd.Series:
+    out = pd.to_numeric(series, errors="coerce")
+    if out.isna().any():
+        warnings.warn(
+            f"Missing values detected in target series '{col_name}'; applying forward/backward fill.",
+            RuntimeWarning,
+        )
+    out = out.ffill().bfill()
+    if (out <= 0).any():
+        positive_values = out[out > 0]
+        min_positive = float(positive_values.min()) if not positive_values.empty else DEFAULT_MIN_POSITIVE
+        clipping_floor = max(min_positive, 1e-6)
+        out = out.clip(lower=clipping_floor)
+    return out
 
 
 def load_excel(path: str, sheet: Optional[str], date_col: Optional[str], target_col: Optional[str]) -> pd.DataFrame:
@@ -44,25 +61,27 @@ def load_excel(path: str, sheet: Optional[str], date_col: Optional[str], target_
     df = df.sort_values("date").reset_index(drop=True)
 
     if target_col and target_col in df.columns:
-        df["target"] = pd.to_numeric(df[target_col], errors="coerce")
-    else:
-        total_like = [c for c in df.columns if "售电量" in str(c)]
-        if total_like:
-            df["target"] = pd.to_numeric(df[total_like[0]], errors="coerce")
-        else:
-            numeric_cols = [c for c in df.columns if c not in {date_col, "date"}]
-            for c in numeric_cols:
-                df[c] = pd.to_numeric(df[c], errors="coerce")
-            df["target"] = df[numeric_cols].sum(axis=1)
+        df["target"] = _clean_target_series(df[target_col], target_col)
+        return df[["date", "target"]]
 
-    if df["target"].isna().any():
-        warnings.warn("Missing values detected in target series; applying forward/backward fill.", RuntimeWarning)
-    df["target"] = df["target"].ffill().bfill()
-    if (df["target"] <= 0).any():
-        positive_values = df["target"][df["target"] > 0]
-        min_positive = float(positive_values.min()) if not positive_values.empty else DEFAULT_MIN_POSITIVE
-        clipping_floor = max(min_positive, 1e-6)
-        df["target"] = df["target"].clip(lower=clipping_floor)
+    category_cols_present = [c for c in CATEGORY_COLUMNS if c in df.columns]
+    if len(category_cols_present) == len(CATEGORY_COLUMNS):
+        out_cols = ["date"]
+        for c in CATEGORY_COLUMNS:
+            df[c] = _clean_target_series(df[c], c)
+            out_cols.append(c)
+        return df[out_cols]
+
+    total_like = [c for c in df.columns if "售电量" in str(c)]
+    if total_like:
+        chosen = total_like[0]
+        df["target"] = _clean_target_series(df[chosen], chosen)
+        return df[["date", "target"]]
+
+    numeric_cols = [c for c in df.columns if c not in {date_col, "date"}]
+    for c in numeric_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    df["target"] = _clean_target_series(df[numeric_cols].sum(axis=1), "target_sum")
     return df[["date", "target"]]
 
 
@@ -164,6 +183,81 @@ def tsi_decompose_and_forecast(df: pd.DataFrame, period: int, horizon: int) -> t
     return compare, future, metric_payload
 
 
+def build_category_result_table(compare: pd.DataFrame, future: pd.DataFrame) -> pd.DataFrame:
+    hist = compare.copy()
+    hist["phase"] = "historical"
+    hist["forecast_sales"] = np.nan
+    hist = hist[
+        [
+            "date",
+            "phase",
+            "historical_sales",
+            "fitted_sales",
+            "forecast_sales",
+            "trend_component",
+            "seasonal_component",
+            "irregular_component",
+            "error",
+        ]
+    ]
+
+    fut = future.copy()
+    fut["phase"] = "forecast"
+    fut["historical_sales"] = np.nan
+    fut["fitted_sales"] = np.nan
+    fut["error"] = np.nan
+    fut = fut[
+        [
+            "date",
+            "phase",
+            "historical_sales",
+            "fitted_sales",
+            "forecast_sales",
+            "trend_component",
+            "seasonal_component",
+            "irregular_component",
+            "error",
+        ]
+    ]
+    return pd.concat([hist, fut], ignore_index=True)
+
+
+def sanitize_filename(name: str) -> str:
+    return re.sub(r"[\\\\/:*?\"<>|\\s]+", "_", str(name)).strip("_") or "result"
+
+
+def build_summary_table(
+    category_compares: dict[str, pd.DataFrame], category_futures: dict[str, pd.DataFrame]
+) -> pd.DataFrame:
+    hist_concat = pd.concat(
+        [
+            cdf.assign(category=cat)[["date", "category", "historical_sales", "fitted_sales"]]
+            for cat, cdf in category_compares.items()
+        ],
+        ignore_index=True,
+    )
+    future_concat = pd.concat(
+        [fdf.assign(category=cat)[["date", "category", "forecast_sales"]] for cat, fdf in category_futures.items()],
+        ignore_index=True,
+    )
+
+    hist_total = hist_concat.groupby("date", as_index=False)[["historical_sales", "fitted_sales"]].sum()
+    hist_total["phase"] = "historical"
+    hist_total["forecast_sales"] = np.nan
+    hist_total["error"] = hist_total["historical_sales"] - hist_total["fitted_sales"]
+
+    future_total = future_concat.groupby("date", as_index=False)[["forecast_sales"]].sum()
+    future_total["phase"] = "forecast"
+    future_total["historical_sales"] = np.nan
+    future_total["fitted_sales"] = np.nan
+    future_total["error"] = np.nan
+
+    summary = pd.concat([hist_total, future_total], ignore_index=True)[
+        ["date", "phase", "historical_sales", "fitted_sales", "forecast_sales", "error"]
+    ]
+    return summary.sort_values(["date", "phase"]).reset_index(drop=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="TSI decomposition forecast for electricity sales from Excel")
     parser.add_argument("--data", required=True, help="Absolute path of Excel file")
@@ -180,13 +274,38 @@ def main() -> None:
     args = parse_args()
     df = load_excel(args.data, args.sheet, args.date_col, args.target_col)
     period = infer_period(df["date"], args.period)
-    compare, future, metric_payload = tsi_decompose_and_forecast(df, period=period, horizon=args.horizon)
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    compare.to_csv(output / "historical_vs_fitted.csv", index=False)
-    future.to_csv(output / "future_sales_forecast.csv", index=False)
-    (output / "metrics.json").write_text(json.dumps(metric_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    category_cols = [c for c in CATEGORY_COLUMNS if c in df.columns]
+    if category_cols:
+        category_metrics = {}
+        category_compares: dict[str, pd.DataFrame] = {}
+        category_futures: dict[str, pd.DataFrame] = {}
+        for cat in category_cols:
+            cat_df = df[["date", cat]].rename(columns={cat: "target"})
+            compare, future, metric_payload = tsi_decompose_and_forecast(cat_df, period=period, horizon=args.horizon)
+            category_compares[cat] = compare
+            category_futures[cat] = future
+            category_metrics[cat] = metric_payload
+
+            cat_result = build_category_result_table(compare, future)
+            cat_file = sanitize_filename(cat)
+            cat_result.to_csv(output / f"{cat_file}_result.csv", index=False)
+
+        summary = build_summary_table(category_compares, category_futures)
+        summary.to_csv(output / "summary_result.csv", index=False)
+        payload = {
+            "period": int(period),
+            "categories": category_cols,
+            "category_metrics": category_metrics,
+        }
+        (output / "metrics.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    else:
+        compare, future, metric_payload = tsi_decompose_and_forecast(df, period=period, horizon=args.horizon)
+        compare.to_csv(output / "historical_vs_fitted.csv", index=False)
+        future.to_csv(output / "future_sales_forecast.csv", index=False)
+        (output / "metrics.json").write_text(json.dumps(metric_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 if __name__ == "__main__":

@@ -92,6 +92,12 @@ python src/sales_tsi_forecast.py \
 
 输出：
 
-- `historical_vs_fitted.csv`：历史售电量与拟合值对比（含趋势/季节/不规则分量）
-- `future_sales_forecast.csv`：未来预测值（含趋势/季节/不规则分量）
-- `metrics.json`：历史拟合误差（MAE/RMSE/MAPE）与模型预测方程（`model_equations`）
+- 若识别到五类字段（`大工业`、`居民生活`、`农业生产`、`工商业`、`趸售及其他`）：
+  - `大工业_result.csv`、`居民生活_result.csv`、`农业生产_result.csv`、`工商业_result.csv`、`趸售及其他_result.csv`：
+    每类历史售电量 vs 拟合值对比 + 未来预测（均包含趋势/季节/不规则分量）
+  - `summary_result.csv`：五类汇总表（历史对比 + 未来预测）
+  - `metrics.json`：各类别误差指标与模型预测方程（`category_metrics`）
+- 否则（单目标模式）：
+  - `historical_vs_fitted.csv`：历史售电量与拟合值对比（含趋势/季节/不规则分量）
+  - `future_sales_forecast.csv`：未来预测值（含趋势/季节/不规则分量）
+  - `metrics.json`：历史拟合误差（MAE/RMSE/MAPE）与模型预测方程（`model_equations`）
